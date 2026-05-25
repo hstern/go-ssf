@@ -1,2 +1,4 @@
+github.com/go-jose/go-jose/v4 v4.1.4 h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz3kA=
+github.com/go-jose/go-jose/v4 v4.1.4/go.mod h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=
 github.com/hstern/go-subjectid v0.0.0-20260525222327-b47140763585 h1:dDFXd9djpbmlAOSlzIbFunmu6YVnzMcOnxPH+ySINZ0=
 github.com/hstern/go-subjectid v0.0.0-20260525222327-b47140763585/go.mod h1:KS0TexS0PZQe7CnntjRRzcufxLdMji1DMVpxiBqCvRM=
