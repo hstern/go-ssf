@@ -1,0 +1,88 @@
+# Required PR checks. Fan-out: static / test / lint / interop, each on its own
+# job so a single run surfaces every failure (a gofmt nit + a vet error + a
+# lint warning all at once), not just the earliest.
+#
+# Runs on `ubuntu-latest` GitHub-hosted runners — Go is installed per job by
+# actions/setup-go. Versions are pinned in env so a single edit moves every
+# job in lockstep; bumping Go follows the same pattern as bumping the
+# `go 1.x` directive in go.mod.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.26.3'
+  GOLANGCI_LINT_VERSION: v2.12.1
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history so any future check that needs ref resolution
+          # (release tagging, blame-driven nolint audits) has it. The
+          # cost on a small library is negligible.
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+      - name: gofmt + go vet + go mod tidy
+        run: sh scripts/check-static.sh
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+      - name: go test -race -shuffle=on
+        run: sh scripts/check-test.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          args: --timeout=5m
+
+  interop:
+    # Conformance against the OpenID Shared Signals Framework interop harness.
+    # In phase 1 this is a stub — the matrix of Transmitter+push,
+    # Transmitter+poll, Receiver+push, Receiver+poll cells lands in phase 7
+    # when the conformance package exists. Wiring the job now keeps the
+    # required-checks list stable across phases; the stub script exits 0
+    # with a marker line so a regression in the wiring is visible.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+      - name: go test -tags interop
+        run: sh scripts/check-interop.sh
