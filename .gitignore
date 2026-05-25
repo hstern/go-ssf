@@ -1,0 +1,14 @@
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Test / coverage output
+*.test
+*.out
+coverage.txt
+coverage.html
