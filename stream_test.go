@@ -169,6 +169,86 @@ func TestStreamConfigRoundTripPoll(t *testing.T) {
 	}
 }
 
+// TestStreamConfigByteStableRoundTrip exercises a compacted spec-
+// shaped payload through unmarshal/marshal and asserts byte-equality
+// against the source. Where TestStreamConfigRoundTripPush asserts the
+// structural round-trip (DeepEqual), this test pins the wire
+// stability that interop scenarios actually compare against.
+func TestStreamConfigByteStableRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	const in = `{"stream_id":"f67e39a0a4d34d56b3aa1bc4cff0069f",` +
+		`"iss":"https://transmitter.example.com",` +
+		`"aud":"https://receiver.example.com",` +
+		`"events_supported":["https://schemas.openid.net/secevent/ssf/event-type/verification"],` +
+		`"events_requested":["https://schemas.openid.net/secevent/ssf/event-type/verification"],` +
+		`"events_delivered":["https://schemas.openid.net/secevent/ssf/event-type/verification"],` +
+		`"delivery":{"method":"urn:ietf:rfc:8935","endpoint_url":"https://receiver.example.com/events","authorization_header":"Bearer rcvr-token"},` +
+		`"min_verification_interval":60,` +
+		`"format":"iss_sub"}`
+
+	var sc StreamConfig
+	if err := json.Unmarshal([]byte(in), &sc); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	out, err := json.Marshal(sc)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(out) != in {
+		t.Errorf("byte-stable round-trip failed\n  in:  %s\n  out: %s", in, out)
+	}
+}
+
+// TestDeliveryMarshalEmitsMethodFirst pins the discriminator-first
+// emission convention that every published OpenID Shared Signals
+// Framework example uses for the Delivery object. Receivers that
+// stream-decode delivery objects (peeking the method discriminator
+// without buffering the whole value) depend on "method" being the
+// first member; the project's interop fixtures compare against
+// payloads that put it first. The assertion is a byte-level prefix
+// check on the marshal output for both built-in methods plus a
+// constructed Delivery that carries an authorization header.
+func TestDeliveryMarshalEmitsMethodFirst(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		d    Delivery
+	}{
+		{
+			name: "push without auth header",
+			d:    Delivery{Method: DeliveryMethodPush, EndpointURL: "https://receiver.example.com/events"},
+		},
+		{
+			name: "poll without auth header",
+			d:    Delivery{Method: DeliveryMethodPoll, EndpointURL: "https://transmitter.example.com/ssf/poll"},
+		},
+		{
+			name: "push with auth header",
+			d: Delivery{
+				Method:              DeliveryMethodPush,
+				EndpointURL:         "https://receiver.example.com/events",
+				AuthorizationHeader: "Bearer rcvr-token",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			out, err := json.Marshal(tc.d)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if !bytes.HasPrefix(out, []byte(`{"method":"`)) {
+				t.Errorf("marshal does not lead with \"method\": %s", out)
+			}
+		})
+	}
+}
+
 // TestDeliveryMethodConstants pins the discriminator URI values to
 // their IANA-registered form. Pure regression guard against a typo
 // in the constant declarations propagating silently into wire

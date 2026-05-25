@@ -4,6 +4,7 @@
 package ssf
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -168,9 +169,20 @@ func (e *HTTPError) Error() string {
 // follows RFC 7807 verbatim; the Extensions field captures any
 // extension members the responder included beyond the registered set.
 //
+// Per RFC 7807 §3.2, extension members live at the top level of the
+// problem-details object alongside the registered members — not under
+// a nested "extensions" key. The [ProblemDetails.MarshalJSON] and
+// [ProblemDetails.UnmarshalJSON] methods on this type implement that
+// flattening: on decode any member whose key is not one of the five
+// registered names is captured verbatim into Extensions; on encode
+// the registered members are emitted in spec-figure order followed by
+// the extension members in the order they were captured.
+//
 // Per the project's wire-fidelity posture, Extensions is
 // [json.RawMessage] rather than map[string]any — interop scenarios
-// pin exact JSON bytes and a map reorders keys on marshal.
+// pin exact JSON bytes and a map reorders keys on marshal. The
+// captured bytes form a JSON object whose members are appended into
+// the top-level object on re-encode.
 type ProblemDetails struct {
 	// Type is a URI reference identifying the problem type. Per
 	// RFC 7807 §3.1 the default when absent is "about:blank".
@@ -190,10 +202,251 @@ type ProblemDetails struct {
 	// occurrence of the problem.
 	Instance string `json:"instance,omitempty"`
 
-	// Extensions captures any RFC 7807 extension members verbatim
-	// as their JSON bytes. Marshalled inline at the document root —
-	// not as a nested "extensions" object — per the project's
-	// custom MarshalJSON in a later phase. Until that lands the
-	// field round-trips as a top-level "extensions" key.
-	Extensions json.RawMessage `json:"extensions,omitempty"`
+	// Extensions carries every RFC 7807 extension member from the
+	// top level of the source document, captured verbatim as the JSON
+	// object whose keys are the extension names and whose values are
+	// the original encoded bytes. On marshal these members are
+	// emitted flat alongside the five registered fields rather than
+	// nested under an "extensions" key. The JSON tag is "-" so the
+	// default codec ignores the field; the custom MarshalJSON and
+	// UnmarshalJSON methods on [ProblemDetails] own its wire shape.
+	Extensions json.RawMessage `json:"-"`
+}
+
+// problemDetailsRegistered names the five RFC 7807 registered
+// members. UnmarshalJSON partitions the input object into these
+// versus extension members; MarshalJSON re-emits registered members
+// in this order followed by the captured extensions.
+var problemDetailsRegistered = map[string]struct{}{
+	"type":     {},
+	"title":    {},
+	"status":   {},
+	"detail":   {},
+	"instance": {},
+}
+
+// MarshalJSON implements [json.Marshaler] for [ProblemDetails]. It
+// emits the five RFC 7807 registered members in spec-figure order
+// (type, title, status, detail, instance), skipping members whose Go
+// value is the zero value to preserve the omit-empty semantics the
+// struct tags advertise. After the registered members it appends the
+// captured Extensions verbatim — each key of the Extensions object
+// becomes a top-level key of the output, matching RFC 7807 §3.2.
+//
+// Zero-valued [ProblemDetails] marshals to "{}". Extension keys that
+// collide with one of the five registered names are emitted as the
+// extension wins (last-write); callers that care about that edge
+// should not populate both forms.
+func (p *ProblemDetails) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+
+	writeKey := func(key string) {
+		if buf.Len() > 1 {
+			buf.WriteByte(',')
+		}
+		buf.WriteByte('"')
+		buf.WriteString(key)
+		buf.WriteString(`":`)
+	}
+
+	if p.Type != "" {
+		writeKey("type")
+		encoded, err := json.Marshal(p.Type)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(encoded)
+	}
+	if p.Title != "" {
+		writeKey("title")
+		encoded, err := json.Marshal(p.Title)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(encoded)
+	}
+	if p.Status != 0 {
+		writeKey("status")
+		encoded, err := json.Marshal(p.Status)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(encoded)
+	}
+	if p.Detail != "" {
+		writeKey("detail")
+		encoded, err := json.Marshal(p.Detail)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(encoded)
+	}
+	if p.Instance != "" {
+		writeKey("instance")
+		encoded, err := json.Marshal(p.Instance)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(encoded)
+	}
+
+	if len(p.Extensions) > 0 {
+		// Strip the outer { and } of the Extensions object and
+		// append its members. json.Decoder preserves key order; we
+		// re-emit the bytes verbatim via json.RawMessage so the
+		// keys keep their original ordering and value-byte form.
+		ext, err := extensionMembers(p.Extensions)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range ext {
+			writeKey(m.key)
+			buf.Write(m.value)
+		}
+	}
+
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+// UnmarshalJSON implements [json.Unmarshaler] for [ProblemDetails].
+// It walks the input object key-by-key, routing the five RFC 7807
+// registered members to their typed struct fields and collecting
+// every other top-level member verbatim into Extensions. Decode is
+// order-preserving for the extension members so a subsequent
+// MarshalJSON reproduces the original wire ordering of the
+// extensions.
+//
+// Per the library's lenient-unmarshal posture, unknown top-level
+// members are kept, not dropped — they are exactly the extension
+// members RFC 7807 §3.2 says implementations MAY publish. Validation
+// of values (e.g. type must parse as a URI reference) is reserved for
+// the opt-in Validate helper in a later phase.
+func (p *ProblemDetails) UnmarshalJSON(data []byte) error {
+	// Reset the destination so a re-used pointer does not retain
+	// stale state from a previous decode.
+	*p = ProblemDetails{}
+
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return fmt.Errorf("ssf: ProblemDetails: expected JSON object, got %v", tok)
+	}
+
+	var extBuf bytes.Buffer
+	extBuf.WriteByte('{')
+
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return fmt.Errorf("ssf: ProblemDetails: non-string key %v", keyTok)
+		}
+
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return err
+		}
+
+		if _, isRegistered := problemDetailsRegistered[key]; isRegistered {
+			if err := assignRegisteredProblemMember(p, key, raw); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// Extension member — append to the buffered Extensions
+		// object in original order.
+		if extBuf.Len() > 1 {
+			extBuf.WriteByte(',')
+		}
+		extBuf.WriteByte('"')
+		extBuf.WriteString(key)
+		extBuf.WriteString(`":`)
+		extBuf.Write(raw)
+	}
+
+	// Consume the closing '}'.
+	if _, err := dec.Token(); err != nil {
+		return err
+	}
+
+	if extBuf.Len() > 1 {
+		extBuf.WriteByte('}')
+		p.Extensions = json.RawMessage(extBuf.Bytes())
+	}
+	return nil
+}
+
+// assignRegisteredProblemMember decodes one of the five RFC 7807
+// registered members into the matching struct field. Splitting this
+// out keeps the UnmarshalJSON loop body small.
+func assignRegisteredProblemMember(p *ProblemDetails, key string, raw json.RawMessage) error {
+	switch key {
+	case "type":
+		return json.Unmarshal(raw, &p.Type)
+	case "title":
+		return json.Unmarshal(raw, &p.Title)
+	case "status":
+		return json.Unmarshal(raw, &p.Status)
+	case "detail":
+		return json.Unmarshal(raw, &p.Detail)
+	case "instance":
+		return json.Unmarshal(raw, &p.Instance)
+	default:
+		// Unreachable: callers pre-filter on problemDetailsRegistered.
+		return fmt.Errorf("ssf: ProblemDetails: unrecognized registered member %q", key)
+	}
+}
+
+// extensionMember holds one key/value pair pulled out of a captured
+// Extensions object during MarshalJSON. Order matters here — the
+// slice preserves the wire order of the original input.
+type extensionMember struct {
+	key   string
+	value json.RawMessage
+}
+
+// extensionMembers parses a captured Extensions object into its
+// ordered list of key/value pairs. Returns an error if the captured
+// bytes are not a JSON object — that condition indicates a caller
+// hand-populated Extensions with malformed input rather than a value
+// produced by [ProblemDetails.UnmarshalJSON].
+func extensionMembers(raw json.RawMessage) ([]extensionMember, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, fmt.Errorf("ssf: ProblemDetails: parse Extensions: %w", err)
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return nil, fmt.Errorf("ssf: ProblemDetails: Extensions must be a JSON object, got %v", tok)
+	}
+
+	var out []extensionMember
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, fmt.Errorf("ssf: ProblemDetails: Extensions: non-string key %v", keyTok)
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, err
+		}
+		out = append(out, extensionMember{key: key, value: value})
+	}
+	return out, nil
 }

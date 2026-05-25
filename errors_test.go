@@ -226,14 +226,17 @@ func TestProblemDetailsRoundTripMinimal(t *testing.T) {
 }
 
 // TestProblemDetailsRoundTripWithExtensions asserts that a document
-// carrying RFC 7807 extension members round-trips byte-stably. The
-// Extensions field is [json.RawMessage] so the exact JSON bytes the
-// responder emitted survive a decode/encode cycle — required for
+// carrying RFC 7807 extension members round-trips byte-stably. Per
+// RFC 7807 §3.2 extension members live at the top level of the
+// problem-details object alongside the five registered fields, not
+// under a nested "extensions" key. The Extensions field on
+// [ssf.ProblemDetails] is [json.RawMessage] so the exact JSON bytes
+// the responder emitted survive a decode/encode cycle — required for
 // interop scenarios that pin payloads byte-for-byte.
 func TestProblemDetailsRoundTripWithExtensions(t *testing.T) {
 	t.Parallel()
 
-	in := []byte(`{"type":"about:blank","title":"Invalid stream configuration","status":400,"detail":"events_requested must be non-empty","extensions":{"field":"events_requested","rule":"non-empty"}}`)
+	in := []byte(`{"type":"about:blank","title":"Invalid stream configuration","status":400,"detail":"events_requested must be non-empty","field":"events_requested","rule":"non-empty"}`)
 
 	var pd ssf.ProblemDetails
 	if err := json.Unmarshal(in, &pd); err != nil {
@@ -255,6 +258,117 @@ func TestProblemDetailsRoundTripWithExtensions(t *testing.T) {
 	if !bytes.Equal(in, out) {
 		t.Errorf("round trip not byte-stable\n  in:  %s\n  out: %s",
 			in, out)
+	}
+}
+
+// TestProblemDetailsExtensionsFlatNotNested confirms the load-bearing
+// RFC 7807 §3.2 contract: extension members are emitted flat at the
+// top level of the problem-details object, never under a nested
+// "extensions" key. This is the asymmetry between Go struct shape
+// (Extensions is a single Go field) and wire shape (multiple
+// top-level JSON members) that the custom MarshalJSON enforces.
+func TestProblemDetailsExtensionsFlatNotNested(t *testing.T) {
+	t.Parallel()
+
+	in := []byte(`{"type":"https://example.com/probs/quota","title":"Quota exceeded","status":429,"balance":42,"retry_after":60}`)
+
+	var pd ssf.ProblemDetails
+	if err := json.Unmarshal(in, &pd); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	out, err := json.Marshal(&pd)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	if bytes.Contains(out, []byte(`"extensions":`)) {
+		t.Errorf("Marshal emitted nested \"extensions\" key: %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"balance":42`)) {
+		t.Errorf("Marshal dropped extension member balance: %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"retry_after":60`)) {
+		t.Errorf("Marshal dropped extension member retry_after: %s", out)
+	}
+	if !bytes.Equal(in, out) {
+		t.Errorf("round trip not byte-stable\n  in:  %s\n  out: %s", in, out)
+	}
+}
+
+// TestProblemDetailsRegisteredMembersInSpecOrder confirms that when
+// MarshalJSON emits the five RFC 7807 registered members it emits
+// them in spec-figure order — type, title, status, detail, instance —
+// regardless of the order they appeared in the source document. This
+// is the ordering interop fixtures compare against.
+func TestProblemDetailsRegisteredMembersInSpecOrder(t *testing.T) {
+	t.Parallel()
+
+	// Source document with the registered members in reverse order
+	// to make sure the encoder is not just echoing input order.
+	in := []byte(`{"instance":"/streams/abc","detail":"d","status":400,"title":"t","type":"about:blank"}`)
+
+	var pd ssf.ProblemDetails
+	if err := json.Unmarshal(in, &pd); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	out, err := json.Marshal(&pd)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	const want = `{"type":"about:blank","title":"t","status":400,"detail":"d","instance":"/streams/abc"}`
+	if string(out) != want {
+		t.Errorf("Marshal:\n  got  %s\n  want %s", out, want)
+	}
+}
+
+// TestProblemDetailsExtensionOrderPreserved confirms that extension
+// members keep their source ordering across a decode/encode cycle.
+// The custom UnmarshalJSON captures them into Extensions in wire
+// order, and MarshalJSON re-emits them in that order — a
+// map[string]any here would shuffle on every round trip.
+func TestProblemDetailsExtensionOrderPreserved(t *testing.T) {
+	t.Parallel()
+
+	// Three extension members in a deliberate non-alphabetical order
+	// (z, a, m) — a map iteration would reorder them.
+	in := []byte(`{"type":"about:blank","status":400,"z_key":"first","a_key":"second","m_key":"third"}`)
+
+	var pd ssf.ProblemDetails
+	if err := json.Unmarshal(in, &pd); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	out, err := json.Marshal(&pd)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !bytes.Equal(in, out) {
+		t.Errorf("extension ordering not preserved\n  in:  %s\n  out: %s", in, out)
+	}
+}
+
+// TestProblemDetailsNoExtensions confirms a document with no extension
+// members emits no Extensions bytes and round-trips through a
+// re-decode without populating the Extensions field.
+func TestProblemDetailsNoExtensions(t *testing.T) {
+	t.Parallel()
+
+	in := []byte(`{"type":"about:blank","title":"x","status":500}`)
+	var pd ssf.ProblemDetails
+	if err := json.Unmarshal(in, &pd); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if pd.Extensions != nil {
+		t.Errorf("Extensions = %s, want nil", pd.Extensions)
+	}
+	out, err := json.Marshal(&pd)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !bytes.Equal(in, out) {
+		t.Errorf("round trip:\n  in:  %s\n  out: %s", in, out)
 	}
 }
 
