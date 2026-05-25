@@ -1,0 +1,83 @@
+# Strict lint configuration. Single source of truth for which linters run
+# in the `lint` CI job (and locally via `golangci-lint run ./...`).
+#
+# Schema: golangci-lint v2 (pinned in the CI workflow at
+# v2.12.1). In v2, `gosimple` is folded into `staticcheck`
+# and is no longer a standalone linter — its checks live under the
+# `staticcheck` umbrella (the `S` category). Formatters (`gofumpt`)
+# live in the top-level `formatters:` block, not `linters:`.
+
+version: "2"
+
+run:
+  # Library is small; default concurrency is fine. Tests included.
+  tests: true
+
+issues:
+  # 0 = unlimited. Surface every issue per run rather than truncating.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  # Strict baseline. Each linter here is chosen deliberately; new ones
+  # need a brief comment explaining what they catch.
+  enable:
+    # correctness
+    - errcheck       # unchecked error returns and type assertions
+    - govet          # built-in: copylocks, printf, struct tags, etc.
+    - ineffassign    # assignments to variables never read
+    - staticcheck    # SA* (correctness), ST* (style), QF* (quickfix), S* (formerly gosimple), U1000 (unused)
+    - unused         # unused exported-or-otherwise identifiers
+    # style
+    - gocritic       # opinionated style + diagnostic checks
+    - misspell       # common English misspellings in comments/strings
+    - revive         # configurable replacement for golint
+
+  settings:
+    errcheck:
+      # Type assertions without comma-ok are a real bug class; check them.
+      check-type-assertions: true
+      # Blank-identifier assignments are an explicit "I know" — leave them.
+      check-blank: false
+
+    staticcheck:
+      # The categories called out in the polish brief:
+      #   SA*  — correctness bugs (always on)
+      #   ST*  — stylistic checks (naming, doc comments, package layout)
+      #   U1000 — unused code (overlaps with `unused` but cheap)
+      # Plus the defaults that v2 ships with under the staticcheck umbrella.
+      checks:
+        - all
+        - -ST1000  # don't require package doc on every file (we have one)
+
+    revive:
+      # revive at its default rule set is close enough to golint to be a
+      # useful style backstop without piling on opinions. If a specific
+      # rule fires noisily we can add per-rule config here later.
+      severity: warning
+
+    gocritic:
+      # Diagnostic + style tags are the safe defaults. Performance and
+      # opinionated tags are noisier and not on by default.
+      enabled-tags:
+        - diagnostic
+        - style
+
+  exclusions:
+    # Apply the same exclusion machinery to every linter.
+    rules:
+      # Test files get a touch more slack on duplication and naming —
+      # tabular test cases legitimately repeat structure.
+      - path: _test\.go
+        linters:
+          - gocritic
+
+formatters:
+  # gofumpt is a strict superset of gofmt — using it transitively
+  # enforces gofmt-clean too. Run via `golangci-lint fmt ./...`.
+  enable:
+    - gofumpt
+
+  settings:
+    gofumpt:
+      extra-rules: true
