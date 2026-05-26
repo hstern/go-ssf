@@ -1,0 +1,1 @@
+{"type":"https://example.com/problem/invalid-request","title":"Invalid stream configuration","status":400,"detail":"events_requested must be non-empty","instance":"/ssf/streams/abc123","stream_id":"abc123","trace_id":"7b9e0d4f-5a1c-4c8b-9b6e-0e4d5f7c8b9a"}

@@ -1,0 +1,1 @@
+{"ack":["jti-aaa","jti-bbb"],"setErrs":{"jti-ccc":{"err":"invalid_key","description":"signing key not found"}},"maxEvents":100,"returnImmediately":false}

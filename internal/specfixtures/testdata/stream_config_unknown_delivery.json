@@ -1,0 +1,1 @@
+{"stream_id":"f67e39a0a4d34d56b3aa1bc4cff0069f","iss":"https://transmitter.example.com","aud":"receiver.example.com","events_requested":["https://schemas.openid.net/secevent/ssf/event-type/verification"],"delivery":{"method":"urn:example:novel-delivery","novel_field":"novel_value","novel_array":[1,2,3]}}
