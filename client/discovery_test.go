@@ -185,7 +185,7 @@ func TestFetchTransmitterConfig_DecodeErrorOnMalformedBody(t *testing.T) {
 }
 
 // fakeDoer is a minimal [client.HTTPDoer] used to confirm
-// [client.WithHTTPDoer] routes the request through the supplied
+// [client.WithDiscoveryHTTPDoer] routes the request through the supplied
 // transport. The fake records the request URL and returns a canned
 // 200 response with the fixture body.
 type fakeDoer struct {
@@ -211,7 +211,7 @@ func TestFetchTransmitterConfig_WithHTTPDoer(t *testing.T) {
 	got, err := client.FetchTransmitterConfig(
 		t.Context(),
 		"https://transmitter.example",
-		client.WithHTTPDoer(doer),
+		client.WithDiscoveryHTTPDoer(doer),
 	)
 	if err != nil {
 		t.Fatalf("FetchTransmitterConfig: %v", err)
@@ -236,7 +236,7 @@ func TestFetchTransmitterConfig_WithHTTPDoer_NilIgnored(t *testing.T) {
 	var hits atomic.Int64
 	srv, _ := newDiscoveryServer(t, &hits)
 
-	if _, err := client.FetchTransmitterConfig(t.Context(), srv.URL, client.WithHTTPDoer(nil)); err != nil {
+	if _, err := client.FetchTransmitterConfig(t.Context(), srv.URL, client.WithDiscoveryHTTPDoer(nil)); err != nil {
 		t.Fatalf("FetchTransmitterConfig(WithHTTPDoer(nil)): %v", err)
 	}
 }
@@ -439,7 +439,7 @@ func TestConfigCache_ErrorNotCached(t *testing.T) {
 }
 
 // TestConfigCache_HonorsCustomDoerOnMiss exercises a cache miss
-// routed through [client.WithHTTPDoer]. The doer's call counter
+// routed through [client.WithDiscoveryHTTPDoer]. The doer's call counter
 // confirms the cache used the supplied transport rather than
 // [http.DefaultClient].
 func TestConfigCache_HonorsCustomDoerOnMiss(t *testing.T) {
@@ -450,7 +450,7 @@ func TestConfigCache_HonorsCustomDoerOnMiss(t *testing.T) {
 	if _, err := cache.FetchTransmitterConfig(
 		t.Context(),
 		"https://transmitter.example",
-		client.WithHTTPDoer(doer),
+		client.WithDiscoveryHTTPDoer(doer),
 	); err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestConfigCache_HonorsCustomDoerOnMiss(t *testing.T) {
 	if _, err := cache.FetchTransmitterConfig(
 		t.Context(),
 		"https://transmitter.example",
-		client.WithHTTPDoer(doer),
+		client.WithDiscoveryHTTPDoer(doer),
 	); err != nil {
 		t.Fatalf("second fetch: %v", err)
 	}

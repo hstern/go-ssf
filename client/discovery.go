@@ -17,28 +17,16 @@ import (
 	"github.com/hstern/go-ssf/transmitter"
 )
 
-// HTTPDoer is the minimum surface the client needs from an HTTP
-// transport: a single [http.Client.Do]-shaped method. Both
-// [*http.Client] and [http.DefaultClient] satisfy it, so the common
-// case is zero ceremony; tests inject a fake, and deployments that
-// front their outbound traffic through an instrumented round-tripper
-// pass a configured [*http.Client] without the library having to know
-// what middleware it carries.
-//
-// The interface is intentionally narrower than [http.RoundTripper]:
-// the discovery and per-endpoint helpers operate on whole requests
-// (Do mutates [http.Request.Body], applies redirects, honors cookies),
-// not on bare round-trips. A caller that needs round-tripper-level
-// control wraps the round-tripper inside an [*http.Client] and passes
-// the client.
-type HTTPDoer interface {
-	Do(req *http.Request) (*http.Response, error)
-}
-
 // DiscoveryOption configures a [FetchTransmitterConfig] call or a
 // [ConfigCache.FetchTransmitterConfig] call. Options are applied in
 // the order they are passed; later options override earlier ones for
 // the same setting.
+//
+// [HTTPDoer] and the package-level [WithHTTPDoer] option are defined
+// in client.go; the option type is shared with the per-endpoint
+// [Client] surface. Discovery accepts the same option for the same
+// reason: the consumer's transport choice is a deployment concern
+// that should be uniform across discovery and per-endpoint calls.
 type DiscoveryOption func(*discoveryConfig)
 
 // discoveryConfig is the resolved configuration assembled from the
@@ -49,16 +37,19 @@ type discoveryConfig struct {
 	doer HTTPDoer
 }
 
-// WithHTTPDoer overrides the [HTTPDoer] used to fetch the metadata
-// document. The default is [http.DefaultClient], which is the right
-// choice for most consumers; pass a configured [*http.Client] when
-// the deployment requires a custom transport (instrumented
-// round-tripper, proxy, mTLS, request-scoped timeouts beyond what
-// [context.Context] supplies).
+// WithDiscoveryHTTPDoer overrides the [HTTPDoer] used to fetch the
+// metadata document for a [FetchTransmitterConfig] call. The default
+// is [http.DefaultClient]; pass a configured [*http.Client] when the
+// deployment requires a custom transport (instrumented round-tripper,
+// proxy, mTLS, request-scoped timeouts beyond what [context.Context]
+// supplies).
 //
 // A nil doer is ignored and the default is retained, so passing
-// WithHTTPDoer(nil) is a no-op rather than a runtime panic.
-func WithHTTPDoer(doer HTTPDoer) DiscoveryOption {
+// WithDiscoveryHTTPDoer(nil) is a no-op rather than a runtime panic.
+//
+// Distinct from [WithHTTPDoer] (which configures a [Client]) so the
+// two option surfaces can coexist in this package.
+func WithDiscoveryHTTPDoer(doer HTTPDoer) DiscoveryOption {
 	return func(c *discoveryConfig) {
 		if doer != nil {
 			c.doer = doer
