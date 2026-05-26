@@ -1,18 +1,21 @@
 #!/bin/sh
 # Conformance / interop test runner. Owned by the `interop` CI job.
 #
-# In phase 1 this is a stub — the matrix of Transmitter+push, Transmitter+poll,
-# Receiver+push, and Receiver+poll cells against the OpenID Shared Signals
-# Framework interop harness lands in phase 7. Until then the script exits 0
-# with a marker line, so a regression in the workflow wiring (missing file,
-# bad permissions, broken interpreter) is still visible in the job log.
+# Runs the library-vs-library loopback harness under internal/interop,
+# which exercises every cell of the Transmitter+push, Transmitter+poll,
+# Receiver+push, Receiver+poll matrix by wiring the in-tree transmitter
+# package and receiver package together over httptest servers. The
+# `interop` build tag gates the harness so `go test ./...` without it
+# stays hermetic — the matching CI `test` job runs without the tag, this
+# `interop` job runs with it.
 #
-# When the real driver lands, this script switches to:
-#   go test -tags interop -race -shuffle=on -count=1 ./internal/interop/...
-# matching the `-race -shuffle=on -count=1` posture of the `test` job. The
-# `interop` build tag gates the network-dependent tests so a `go test ./...`
-# without it stays hermetic.
+# Posture matches the `test` job: -race for data-race detection,
+# -shuffle=on to flush order dependencies, -count=1 to bypass the
+# test cache. Live OpenID SSF working-group interop events run on
+# their own cadence and are out of scope for every-build CI; the
+# loopback harness here is the always-on conformance signal.
 set -eu
 
-echo "==> interop stub (phase 1 — real harness lands in phase 7)"
-echo "OK: interop stub passed."
+echo "==> go test -tags interop -race -shuffle=on -count=1 ./internal/interop/..."
+go test -tags interop -race -shuffle=on -count=1 ./internal/interop/...
+echo "OK: interop tests passed."
