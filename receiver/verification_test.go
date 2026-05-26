@@ -327,7 +327,7 @@ func TestVerificationChallengerWithAuthorizationHeader(t *testing.T) {
 	if _, err := challenger.Challenge(ctx,
 		receiver.WithEndpoint(vs.URL),
 		receiver.WithState(state),
-		receiver.WithAuthorizationHeader(auth),
+		receiver.WithChallengeAuthorizationHeader(auth),
 	); err != nil {
 		t.Fatalf("Challenge: %v", err)
 	}

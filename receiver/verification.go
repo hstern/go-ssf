@@ -109,11 +109,14 @@ func WithStreamID(streamID string) ChallengeOption {
 	}
 }
 
-// WithAuthorizationHeader sets the Authorization header on the
+// WithChallengeAuthorizationHeader sets the Authorization header on the
 // verification POST verbatim. The spec is auth-scheme agnostic — the
 // header value passes through unmodified, including any "Bearer "
 // prefix the caller wishes to include.
-func WithAuthorizationHeader(header string) ChallengeOption {
+//
+// Disambiguated from [WithAuthorizationHeader] (Poller-scoped) so both
+// option surfaces can coexist in this package.
+func WithChallengeAuthorizationHeader(header string) ChallengeOption {
 	return func(o *challengeOptions) {
 		o.authHeader = header
 	}
@@ -130,10 +133,14 @@ func WithState(state string) ChallengeOption {
 	}
 }
 
-// WithHTTPClient overrides the [http.Client] used for the verification
-// POST. The default is [http.DefaultClient]. Callers wanting custom
-// transport, timeouts, or TLS settings supply their own client here.
-func WithHTTPClient(client *http.Client) ChallengeOption {
+// WithChallengeHTTPClient overrides the [http.Client] used for the
+// verification POST. The default is [http.DefaultClient]. Callers
+// wanting custom transport, timeouts, or TLS settings supply their own
+// client here.
+//
+// Disambiguated from [WithHTTPClient] (Poller-scoped) so both option
+// surfaces can coexist in this package.
+func WithChallengeHTTPClient(client *http.Client) ChallengeOption {
 	return func(o *challengeOptions) {
 		o.httpClient = client
 	}
