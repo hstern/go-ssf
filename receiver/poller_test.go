@@ -626,8 +626,19 @@ func TestPollerNoEventsBackoffDoubles(t *testing.T) {
 	gap1 := helper.pollTimes[1].Sub(helper.pollTimes[0])
 	gap2 := helper.pollTimes[2].Sub(helper.pollTimes[1])
 	gap3 := helper.pollTimes[3].Sub(helper.pollTimes[2])
-	if gap1 >= gap2 || gap2 >= gap3 {
-		t.Errorf("expected doubling backoff, got %v -> %v -> %v", gap1, gap2, gap3)
+
+	// The backoff is configured to double each empty poll. Compare each
+	// successive gap as a ratio rather than absolute duration so OS
+	// scheduler jitter on a loaded test runner does not flip a strict <
+	// comparison while the doubling is qualitatively correct. The band
+	// [1.5, 3.0] still rejects a regression to constant growth (ratio
+	// ~1.0) or linear growth (ratio approaches 1 as gaps grow).
+	const minRatio, maxRatio = 1.5, 3.0
+	r1 := float64(gap2) / float64(gap1)
+	r2 := float64(gap3) / float64(gap2)
+	if r1 < minRatio || r1 > maxRatio || r2 < minRatio || r2 > maxRatio {
+		t.Errorf("expected doubling backoff (ratios in [%.1f, %.1f]), got gaps %v -> %v -> %v (ratios %.2f, %.2f)",
+			minRatio, maxRatio, gap1, gap2, gap3, r1, r2)
 	}
 }
 
