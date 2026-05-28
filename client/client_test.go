@@ -76,9 +76,13 @@ func TestNewClient_RejectsNilDoer(t *testing.T) {
 func TestNewClient_AppliesDefaults(t *testing.T) {
 	t.Parallel()
 
-	c, err := NewClient("https://t.example.com/api")
+	got, err := NewClient("https://t.example.com/api")
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
+	}
+	c, ok := got.(*httpClient)
+	if !ok {
+		t.Fatalf("NewClient returned %T, want *httpClient", got)
 	}
 	if c.doer != http.DefaultClient {
 		t.Errorf("doer = %v, want http.DefaultClient", c.doer)
@@ -106,11 +110,15 @@ func TestNewClient_AppliesDefaults(t *testing.T) {
 func TestNewClient_WithEndpoints_PartialOverride(t *testing.T) {
 	t.Parallel()
 
-	c, err := NewClient("https://t.example.com", WithEndpoints(EndpointPaths{
+	got, err := NewClient("https://t.example.com", WithEndpoints(EndpointPaths{
 		Config: "/api/v1/streams",
 	}))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
+	}
+	c, ok := got.(*httpClient)
+	if !ok {
+		t.Fatalf("NewClient returned %T, want *httpClient", got)
 	}
 	if c.paths.Config != "/api/v1/streams" {
 		t.Errorf("Config path = %q, want %q", c.paths.Config, "/api/v1/streams")
@@ -726,7 +734,7 @@ func TestClient_NonProblemErrorResponse(t *testing.T) {
 // newClient constructs a [Client] for a test, failing the test
 // immediately on construction error. It is the lightweight wrapper
 // every happy-path test reaches for.
-func newClient(t *testing.T, baseURL string, opts ...Option) *Client {
+func newClient(t *testing.T, baseURL string, opts ...Option) Client {
 	t.Helper()
 	c, err := NewClient(baseURL, opts...)
 	if err != nil {
