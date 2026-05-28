@@ -36,6 +36,7 @@ import (
 	"strings"
 
 	"github.com/hstern/go-ssf"
+	"github.com/hstern/go-ssf/transmitter"
 )
 
 // HTTPDoer is the minimal interface this package needs from an HTTP
@@ -125,21 +126,21 @@ const acceptHeader = "application/json, application/problem+json"
 // having to guess.
 const jsonContentType = "application/json; charset=utf-8"
 
-// Client wraps the HTTP endpoints defined by OpenID Shared Signals
-// Framework 1.0 §7 and RFC 8936 §2.4. The methods are 1:1 with the
-// spec endpoints — and parallel in signature to the
-// [transmitter.Transmitter] interface — so a Receiver that abstracts
+// Client is the Receiver-side contract for the HTTP endpoints defined
+// by OpenID Shared Signals Framework 1.0 §7 and RFC 8936 §2.4. The
+// 11 methods are 1:1 with the spec endpoints and have signatures
+// identical to [transmitter.Transmitter] — so a Receiver that holds
 // its Transmitter behind that interface can switch between an
 // in-process implementation and a remote HTTP Transmitter by
-// swapping the implementation, without reshaping its call sites.
+// swapping the value, without reshaping its call sites.
 //
-// Transport is pluggable through [HTTPDoer]; authentication is
-// pluggable either through [WithAuthorizationHeader] (a static
-// header value applied to every request) or by wrapping the doer to
-// mint a fresh credential per request. The base URL and per-endpoint
-// paths are set at construction time and not mutated thereafter; a
-// Client is safe for concurrent use by multiple goroutines as long
-// as the supplied [HTTPDoer] is.
+// The default implementation is HTTP-backed and is constructed with
+// [NewClient]. Transport is pluggable through [HTTPDoer];
+// authentication is pluggable either through [WithAuthorizationHeader]
+// (a static header value applied to every request) or by wrapping the
+// doer to mint a fresh credential per request. The HTTP-backed Client
+// is safe for concurrent use by multiple goroutines as long as the
+// supplied [HTTPDoer] is.
 //
 // Errors returned by Client methods follow [ParseHTTPError]'s
 // contract: on a non-2xx response the returned error is an
@@ -147,7 +148,71 @@ const jsonContentType = "application/json; charset=utf-8"
 // (when one applies), so callers can branch with [errors.Is] for
 // the spec-level cause and with [errors.As] for the raw status,
 // body, and RFC 7807 problem-details.
-type Client struct {
+//
+// Test doubles and alternative transports satisfy Client by
+// implementing the same 11 methods; the interface deliberately
+// exposes no HTTP-shaped surface (no [net/http.ResponseWriter], no
+// path parameters) so a fake driving an in-process Transmitter is as
+// usable as the HTTP-backed default.
+type Client interface {
+	// GetConfig fetches the stream configuration identified by
+	// streamID per spec §7.1.1.
+	GetConfig(ctx context.Context, streamID string) (*ssf.StreamConfig, error)
+
+	// ListConfig fetches a page of stream configurations the caller
+	// is authorized to see per spec §7.1.1. pageToken is the opaque
+	// continuation token returned by the previous call (empty for
+	// the first page); nextToken is empty when the listing is
+	// exhausted.
+	ListConfig(ctx context.Context, pageToken string) (configs []*ssf.StreamConfig, nextToken string, err error)
+
+	// CreateConfig POSTs cfg to the stream-configuration endpoint
+	// per spec §7.1.1 and returns the server-assigned canonical
+	// representation.
+	CreateConfig(ctx context.Context, cfg *ssf.StreamConfig) (*ssf.StreamConfig, error)
+
+	// UpdateConfig PATCHes the stream identified by cfg.StreamID
+	// with cfg and returns the post-update canonical representation
+	// per spec §7.1.1.
+	UpdateConfig(ctx context.Context, cfg *ssf.StreamConfig) (*ssf.StreamConfig, error)
+
+	// DeleteConfig removes the stream identified by streamID per
+	// spec §7.1.1.
+	DeleteConfig(ctx context.Context, streamID string) error
+
+	// GetStatus fetches the lifecycle state of the stream identified
+	// by streamID per spec §7.1.2. When subject is non-empty the
+	// response is scoped to that single subject; nil/empty returns
+	// the stream-wide status.
+	GetStatus(ctx context.Context, streamID string, subject json.RawMessage) (*ssf.StatusResponse, error)
+
+	// UpdateStatus requests a lifecycle transition on the stream
+	// identified by streamID per spec §7.1.2.
+	UpdateStatus(ctx context.Context, streamID string, req *ssf.StatusUpdateRequest) (*ssf.StatusResponse, error)
+
+	// AddSubject registers a subject as in-scope for the stream
+	// identified by streamID per spec §7.1.3.
+	AddSubject(ctx context.Context, streamID string, req *ssf.AddSubjectRequest) error
+
+	// RemoveSubject removes a subject from the stream identified by
+	// streamID per spec §7.1.3.
+	RemoveSubject(ctx context.Context, streamID string, req *ssf.RemoveSubjectRequest) error
+
+	// Verify initiates the verification flow on the stream
+	// identified by streamID per spec §7.1.4.
+	Verify(ctx context.Context, streamID string, req *ssf.VerificationRequest) error
+
+	// PollEvents POSTs an RFC 8936 §2.4 poll request for the stream
+	// identified by streamID and returns the response carrying any
+	// pending SETs.
+	PollEvents(ctx context.Context, streamID string, req *ssf.PollRequest) (*ssf.PollResponse, error)
+}
+
+// httpClient is the HTTP-backed implementation of [Client] that
+// [NewClient] returns. It is unexported because consumers interact
+// with the interface; access to its fields is reserved for tests in
+// this package via export_test.go.
+type httpClient struct {
 	// baseURL is the parsed base URL the client appends endpoint
 	// paths to. Stored pre-parsed so each request avoids re-parsing.
 	baseURL *url.URL
@@ -164,9 +229,21 @@ type Client struct {
 	paths EndpointPaths
 }
 
-// Option configures a [Client] at construction time. Options compose;
-// later options override earlier ones for the same setting.
-type Option func(*Client)
+// Compile-time assertion: the HTTP-backed implementation satisfies
+// both the package's own [Client] interface and the sibling
+// [transmitter.Transmitter] interface, since the two share the same
+// 11-method shape by design. Either side of the symmetry breaking
+// (a method renamed, a signature drifted) trips this assertion at
+// compile time rather than at first use.
+var (
+	_ Client                  = (*httpClient)(nil)
+	_ transmitter.Transmitter = (*httpClient)(nil)
+)
+
+// Option configures the HTTP-backed [Client] at construction time.
+// Options compose; later options override earlier ones for the same
+// setting.
+type Option func(*httpClient)
 
 // WithHTTPDoer overrides the HTTP transport the client uses. The
 // default is [http.DefaultClient]. Pass any value satisfying
@@ -178,7 +255,7 @@ type Option func(*Client)
 // learn about the misconfiguration the first time a method panics on
 // a nil-pointer dereference.
 func WithHTTPDoer(doer HTTPDoer) Option {
-	return func(c *Client) { c.doer = doer }
+	return func(c *httpClient) { c.doer = doer }
 }
 
 // WithAuthorizationHeader sets a verbatim Authorization header
@@ -194,7 +271,7 @@ func WithHTTPDoer(doer HTTPDoer) Option {
 // credential is minted at request time rather than fixed at client
 // construction.
 func WithAuthorizationHeader(header string) Option {
-	return func(c *Client) { c.authzHeader = header }
+	return func(c *httpClient) { c.authzHeader = header }
 }
 
 // WithEndpoints overrides the per-endpoint URL paths the client
@@ -208,7 +285,7 @@ func WithAuthorizationHeader(header string) Option {
 // URL with [net/url] reference-resolution rules; supplying a
 // fully-qualified URL in a path field is not supported.
 func WithEndpoints(paths EndpointPaths) Option {
-	return func(c *Client) {
+	return func(c *httpClient) {
 		if paths.Config != "" {
 			c.paths.Config = paths.Config
 		}
@@ -230,12 +307,13 @@ func WithEndpoints(paths EndpointPaths) Option {
 	}
 }
 
-// NewClient constructs a [Client] targeting the Transmitter at
-// baseURL. The base URL is parsed and validated at construction time
-// — an empty string or a string that does not parse as an absolute
-// URL with an http(s) scheme is rejected with a wrapped
-// [*ssf.ValidationError], so misconfiguration surfaces synchronously
-// rather than as a confusing error from the first method call.
+// NewClient constructs an HTTP-backed [Client] targeting the
+// Transmitter at baseURL. The base URL is parsed and validated at
+// construction time — an empty string or a string that does not
+// parse as an absolute URL with an http(s) scheme is rejected with a
+// wrapped [*ssf.ValidationError], so misconfiguration surfaces
+// synchronously rather than as a confusing error from the first
+// method call.
 //
 // Options apply after defaults: by default the client uses
 // [http.DefaultClient] as its transport, sets no Authorization
@@ -246,7 +324,7 @@ func WithEndpoints(paths EndpointPaths) Option {
 // The returned Client is safe for concurrent use by multiple
 // goroutines provided its [HTTPDoer] is — [http.DefaultClient] and
 // any [*http.Client] are.
-func NewClient(baseURL string, opts ...Option) (*Client, error) {
+func NewClient(baseURL string, opts ...Option) (Client, error) {
 	if baseURL == "" {
 		return nil, &ssf.ValidationError{
 			Rule:   "baseURL non-empty",
@@ -277,7 +355,7 @@ func NewClient(baseURL string, opts ...Option) (*Client, error) {
 		}
 	}
 
-	c := &Client{
+	c := &httpClient{
 		baseURL: parsed,
 		doer:    http.DefaultClient,
 		paths: EndpointPaths{
@@ -324,7 +402,7 @@ type listConfigResponse struct {
 // A 404 response surfaces as an error matching
 // [ssf.ErrStreamNotFound] (via [errors.Is]); other non-2xx responses
 // follow [ParseHTTPError]'s usual mapping.
-func (c *Client) GetConfig(ctx context.Context, streamID string) (*ssf.StreamConfig, error) {
+func (c *httpClient) GetConfig(ctx context.Context, streamID string) (*ssf.StreamConfig, error) {
 	q := url.Values{"stream_id": []string{streamID}}
 	req, err := c.newRequest(ctx, http.MethodGet, c.paths.Config, q, nil)
 	if err != nil {
@@ -349,7 +427,7 @@ func (c *Client) GetConfig(ctx context.Context, streamID string) (*ssf.StreamCon
 // envelope and return a bare JSON array of [ssf.StreamConfig] are
 // not supported by this method — switch to a custom path layout and
 // decode the array yourself if you have to integrate with one.
-func (c *Client) ListConfig(ctx context.Context, pageToken string) (configs []*ssf.StreamConfig, nextToken string, err error) {
+func (c *httpClient) ListConfig(ctx context.Context, pageToken string) (configs []*ssf.StreamConfig, nextToken string, err error) {
 	q := url.Values{}
 	if pageToken != "" {
 		q.Set("page_token", pageToken)
@@ -371,7 +449,7 @@ func (c *Client) ListConfig(ctx context.Context, pageToken string) (configs []*s
 // JSON-encoded [ssf.StreamConfig]; the Transmitter typically assigns
 // fields the caller omitted (StreamID, IssuerJWKSURI, …) and the
 // returned value reflects those assignments.
-func (c *Client) CreateConfig(ctx context.Context, cfg *ssf.StreamConfig) (*ssf.StreamConfig, error) {
+func (c *httpClient) CreateConfig(ctx context.Context, cfg *ssf.StreamConfig) (*ssf.StreamConfig, error) {
 	if cfg == nil {
 		return nil, &ssf.ValidationError{
 			Rule:   "cfg non-nil",
@@ -396,7 +474,7 @@ func (c *Client) CreateConfig(ctx context.Context, cfg *ssf.StreamConfig) (*ssf.
 // as a query parameter (the library's mux makes it authoritative)
 // and the full configuration is the JSON body — the operation is a
 // full replacement, not a merge.
-func (c *Client) UpdateConfig(ctx context.Context, cfg *ssf.StreamConfig) (*ssf.StreamConfig, error) {
+func (c *httpClient) UpdateConfig(ctx context.Context, cfg *ssf.StreamConfig) (*ssf.StreamConfig, error) {
 	if cfg == nil {
 		return nil, &ssf.ValidationError{
 			Rule:   "cfg non-nil",
@@ -427,7 +505,7 @@ func (c *Client) UpdateConfig(ctx context.Context, cfg *ssf.StreamConfig) (*ssf.
 // Shared Signals Framework 1.0 §7.1.1. The Transmitter returns 204
 // No Content on success; the method drains and discards any body
 // the Transmitter chose to include.
-func (c *Client) DeleteConfig(ctx context.Context, streamID string) error {
+func (c *httpClient) DeleteConfig(ctx context.Context, streamID string) error {
 	q := url.Values{"stream_id": []string{streamID}}
 	req, err := c.newRequest(ctx, http.MethodDelete, c.paths.Config, q, nil)
 	if err != nil {
@@ -446,7 +524,7 @@ func (c *Client) DeleteConfig(ctx context.Context, streamID string) error {
 // subject is [encoding/json.RawMessage] rather than a typed Subject
 // Identifier because the spec leaves the type open (any RFC 9493
 // format). Callers that hold a typed value marshal it first.
-func (c *Client) GetStatus(ctx context.Context, streamID string, subject json.RawMessage) (*ssf.StatusResponse, error) {
+func (c *httpClient) GetStatus(ctx context.Context, streamID string, subject json.RawMessage) (*ssf.StatusResponse, error) {
 	q := url.Values{"stream_id": []string{streamID}}
 	if len(subject) > 0 {
 		q.Set("subject", string(subject))
@@ -467,7 +545,7 @@ func (c *Client) GetStatus(ctx context.Context, streamID string, subject json.Ra
 // §7.1.2. The Transmitter MAY honor, delay, or refuse the request;
 // the returned [ssf.StatusResponse] reflects the resulting state,
 // which may converge asynchronously.
-func (c *Client) UpdateStatus(ctx context.Context, streamID string, body *ssf.StatusUpdateRequest) (*ssf.StatusResponse, error) {
+func (c *httpClient) UpdateStatus(ctx context.Context, streamID string, body *ssf.StatusUpdateRequest) (*ssf.StatusResponse, error) {
 	if body == nil {
 		return nil, &ssf.ValidationError{
 			Rule:   "body non-nil",
@@ -492,7 +570,7 @@ func (c *Client) UpdateStatus(ctx context.Context, streamID string, body *ssf.St
 // §7.1.3. The Transmitter's response body (an empty JSON object) is
 // drained and discarded; success is signalled by the absence of an
 // error.
-func (c *Client) AddSubject(ctx context.Context, streamID string, body *ssf.AddSubjectRequest) error {
+func (c *httpClient) AddSubject(ctx context.Context, streamID string, body *ssf.AddSubjectRequest) error {
 	if body == nil {
 		return &ssf.ValidationError{
 			Rule:   "body non-nil",
@@ -511,7 +589,7 @@ func (c *Client) AddSubject(ctx context.Context, streamID string, body *ssf.AddS
 // RemoveSubject removes a subject from the stream identified by
 // streamID per OpenID Shared Signals Framework 1.0 §7.1.3. The
 // response body (an empty JSON object) is drained and discarded.
-func (c *Client) RemoveSubject(ctx context.Context, streamID string, body *ssf.RemoveSubjectRequest) error {
+func (c *httpClient) RemoveSubject(ctx context.Context, streamID string, body *ssf.RemoveSubjectRequest) error {
 	if body == nil {
 		return &ssf.ValidationError{
 			Rule:   "body non-nil",
@@ -533,7 +611,7 @@ func (c *Client) RemoveSubject(ctx context.Context, streamID string, body *ssf.R
 // 200; the SET itself appears on the configured delivery channel
 // (push endpoint or next poll), where the Receiver matches it
 // against the state value supplied in body.
-func (c *Client) Verify(ctx context.Context, streamID string, body *ssf.VerificationRequest) error {
+func (c *httpClient) Verify(ctx context.Context, streamID string, body *ssf.VerificationRequest) error {
 	if body == nil {
 		return &ssf.ValidationError{
 			Rule:   "body non-nil",
@@ -558,7 +636,7 @@ func (c *Client) Verify(ctx context.Context, streamID string, body *ssf.Verifica
 // to the auth credential; the library's wire shape is the more
 // explicit choice that the [transmitter.Transmitter] interface
 // requires.)
-func (c *Client) PollEvents(ctx context.Context, streamID string, body *ssf.PollRequest) (*ssf.PollResponse, error) {
+func (c *httpClient) PollEvents(ctx context.Context, streamID string, body *ssf.PollRequest) (*ssf.PollResponse, error) {
 	if body == nil {
 		return nil, &ssf.ValidationError{
 			Rule:   "body non-nil",
@@ -586,7 +664,7 @@ func (c *Client) PollEvents(ctx context.Context, streamID string, body *ssf.Poll
 //
 // The Authorization and Accept headers are applied here so every
 // method shares the same outbound header policy.
-func (c *Client) newRequest(ctx context.Context, method, path string, query url.Values, body any) (*http.Request, error) {
+func (c *httpClient) newRequest(ctx context.Context, method, path string, query url.Values, body any) (*http.Request, error) {
 	endpoint, err := c.resolvePath(path)
 	if err != nil {
 		return nil, err
@@ -626,7 +704,7 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 // [net/url.URL.ResolveReference] default of stripping "/api". This
 // matches the way Transmitter deployments behind a reverse-proxy
 // path prefix typically configure their clients.
-func (c *Client) resolvePath(path string) (*url.URL, error) {
+func (c *httpClient) resolvePath(path string) (*url.URL, error) {
 	if path == "" {
 		return nil, &ssf.ValidationError{
 			Rule:   "endpoint path non-empty",
@@ -657,7 +735,7 @@ func (c *Client) resolvePath(path string) (*url.URL, error) {
 //
 // On 2xx with out == nil the body is drained and discarded so the
 // underlying TCP connection can be reused.
-func (c *Client) do(req *http.Request, out any) error {
+func (c *httpClient) do(req *http.Request, out any) error {
 	resp, err := c.doer.Do(req)
 	if err != nil {
 		return fmt.Errorf("ssf/client: http %s %s: %w", req.Method, req.URL.Path, err)

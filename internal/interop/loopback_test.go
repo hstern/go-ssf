@@ -175,7 +175,7 @@ func (s *recordingSink) count() int {
 // PushHandler. The harness uses [client.Client.CreateConfig] for
 // realism: the test exercises the JSON shapes a real Receiver
 // would put on the wire.
-func newPushStream(t *testing.T, c *client.Client, receiverPushURL string) string {
+func newPushStream(t *testing.T, c client.Client, receiverPushURL string) string {
 	t.Helper()
 
 	cfg, err := c.CreateConfig(context.Background(), &ssf.StreamConfig{
@@ -202,7 +202,7 @@ func newPushStream(t *testing.T, c *client.Client, receiverPushURL string) strin
 // [transmitter.MuxHandler] mounts the poll endpoint at
 // [transmitter.DefaultPollPath] on the same server, so the URL is
 // the test server's base URL + that path.
-func newPollStream(t *testing.T, c *client.Client, transmitterPollURL string) string {
+func newPollStream(t *testing.T, c client.Client, transmitterPollURL string) string {
 	t.Helper()
 
 	cfg, err := c.CreateConfig(context.Background(), &ssf.StreamConfig{

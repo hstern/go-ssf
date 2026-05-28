@@ -10,6 +10,18 @@ file tracks the former.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING**: `client.Client` is now an interface mirroring the
+  eleven-method `transmitter.Transmitter` contract, and `NewClient`
+  returns `(Client, error)` rather than `(*Client, error)`. A Receiver
+  that holds its Transmitter behind `transmitter.Transmitter` can now
+  drop in the HTTP-backed `Client` interchangeably, with no adapter,
+  because the HTTP implementation satisfies both interfaces. The
+  HTTP-backed implementation is the unexported `httpClient` and is
+  still constructed via `NewClient`; the public Option surface is
+  unchanged. Targeted at `v0.2.0`.
+
 ## [0.1.0] - 2026-05-26
 
 First tagged release. Implements OpenID Shared Signals Framework 1.0
